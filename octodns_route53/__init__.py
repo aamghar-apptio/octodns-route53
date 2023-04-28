@@ -1795,7 +1795,7 @@ class Route53Provider(BaseProvider):
             and change.new.values == change.existing.values
         )
 
-    def _apply(self, plan):
+    def _apply(self, plan, no_delete=False):
         desired = plan.desired
         changes = plan.changes
         self.log.info(
@@ -1822,46 +1822,52 @@ class Route53Provider(BaseProvider):
             # them and we CRUD in the desired order
             mods.sort(key=_mod_keyer)
 
-            mods_rs_count = sum(
-                [
-                    len(m['ResourceRecordSet'].get('ResourceRecords', ''))
-                    for m in mods
-                ]
-            )
-
-            if mods_rs_count > self.max_changes:
-                # a single mod resulted in too many ResourceRecords changes
-                raise Exception(f'Too many modifications: {mods_rs_count}')
-
-            # r53 limits changesets to 1000 entries
-            if (batch_rs_count + mods_rs_count) < self.max_changes:
-                # append to the batch
-                batch += mods
-                batch_rs_count += mods_rs_count
-            else:
-                self.log.info(
-                    '_apply:   sending change request for batch of '
-                    '%d mods, %d ResourceRecords',
-                    len(batch),
-                    batch_rs_count,
-                )
-                # send the batch
-                self._really_apply(batch, zone_id)
-                # start a new batch with the leftovers
-                batch = mods
-                batch_rs_count = mods_rs_count
-
-        # the way the above process works there will always be something left
-        # over in batch to process. In the case that we submit a batch up there
-        # it was always the case that there was something pushing us over
-        # max_changes and thus left over to submit.
-        self.log.info(
-            '_apply:   sending change request for batch of %d mods,'
-            ' %d ResourceRecords',
-            len(batch),
-            batch_rs_count,
-        )
-        self._really_apply(batch, zone_id)
+            for m in mods:
+                self.log.info('mod change:'+str(m))  
+                if no_delete and m['Action'] == 'DELETE':
+                    self.log.info('Delete operation, skipping')
+                    self.log.info(m)
+                else:
+                    mods_rs_count = sum(
+                        [
+                            len(m['ResourceRecordSet'].get('ResourceRecords', ''))
+                            for m in mods
+                        ]
+                    )
+        
+                    if mods_rs_count > self.max_changes:
+                        # a single mod resulted in too many ResourceRecords changes
+                        raise Exception(f'Too many modifications: {mods_rs_count}')
+        
+                    # r53 limits changesets to 1000 entries
+                    if (batch_rs_count + mods_rs_count) < self.max_changes:
+                        # append to the batch
+                        batch += mods
+                        batch_rs_count += mods_rs_count
+                    else:
+                        self.log.info(
+                            '_apply:   sending change request for batch of '
+                            '%d mods, %d ResourceRecords',
+                            len(batch),
+                            batch_rs_count,
+                        )
+                        # send the batch
+                        self._really_apply(batch, zone_id)
+                        # start a new batch with the leftovers
+                        batch = mods
+                        batch_rs_count = mods_rs_count
+        
+                    # the way the above process works there will always be something left
+                    # over in batch to process. In the case that we submit a batch up there
+                    # it was always the case that there was something pushing us over
+                    # max_changes and thus left over to submit.
+                    self.log.info(
+                        '_apply:   sending change request for batch of %d mods,'
+                        ' %d ResourceRecords',
+                        len(batch),
+                        batch_rs_count,
+                    )
+                    self._really_apply(batch, zone_id)
 
     def _really_apply(self, batch, zone_id):
         # Ensure this batch is ordered (deletes before creates etc.)
